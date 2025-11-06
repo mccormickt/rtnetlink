@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use std::{path::Path, process::exit};
+use std::{os::fd::OwnedFd, path::Path, process::exit};
 
 use nix::{
     fcntl::OFlag,
@@ -76,6 +76,30 @@ impl NetworkNamespace {
                 Err(Error::NamespaceError(err_msg))
             }
         }
+    }
+
+    /// Retrieve a file descriptor for a network namespace by name
+    pub fn from_name(ns_name: String) -> Result<OwnedFd, Error> {
+        let ns_path = Path::new(NETNS_PATH).join(&ns_name);
+        nix::fcntl::open(&ns_path, OFlag::O_RDONLY, Mode::empty()).map_err(
+            |e| {
+                Error::NamespaceError(format!(
+                    "Failed to open network namespace: {e}"
+                ))
+            },
+        )
+    }
+
+    /// Retrieve a file descriptor for a network namespace by PID
+    pub fn from_pid(pid: u32) -> Result<OwnedFd, Error> {
+        let ns_path = Path::new("/proc/").join(pid.to_string()).join("ns/net");
+        nix::fcntl::open(&ns_path, OFlag::O_RDONLY, Mode::empty()).map_err(
+            |e| {
+                Error::NamespaceError(format!(
+                    "Failed to open network namespace: {e}"
+                ))
+            },
+        )
     }
 
     /// Remove a network namespace
@@ -168,6 +192,37 @@ impl NetworkNamespace {
                 exit(1)
             }
             Ok(Ok(())) => exit(0),
+        }
+    }
+
+    /// Called from the child process.
+    /// Retrieves a file descriptor to the provided network namespace
+    pub fn child_process_get_ns(ns_name: String) -> Result<OwnedFd, Error> {
+        log::trace!("child_process will create the namespace");
+        let ns_path = Path::new(NETNS_PATH).join(&ns_name);
+        let mode = Mode::from_iter([
+            Mode::S_IRWXU,
+            Mode::S_IRGRP,
+            Mode::S_IXGRP,
+            Mode::S_IROTH,
+            Mode::S_IXOTH,
+        ]);
+
+        if nix::sys::stat::stat(&ns_path).is_err() {
+            if let Err(e) = nix::unistd::mkdir(&ns_path, mode) {
+                log::error!("mkdir error: {e}");
+                let err_msg = format!("mkdir error: {e}");
+                return Err(Error::NamespaceError(err_msg));
+            }
+        }
+
+        match nix::fcntl::open(&ns_path, OFlag::O_RDWR | OFlag::O_CREAT, mode) {
+            Ok(fd) => Ok(fd),
+            Err(e) => {
+                log::error!("open error: {}", e);
+                let err_msg = format!("open error: {e}");
+                Err(Error::NamespaceError(err_msg))
+            }
         }
     }
 
